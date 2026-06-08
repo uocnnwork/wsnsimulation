@@ -155,8 +155,12 @@ class SensorNode:
     # =========================================================================
 
     def _deliver(self, sender: SensorNode, packet,
-                 channel) -> simpy.events.Event:
-        """Full TX pipeline: jitter → CCA → air-time → RSSI loss → buffer."""
+                 channel, metrics=None) -> simpy.events.Event:
+        """Full TX pipeline: jitter → CCA → air-time → RSSI loss → buffer.
+
+        metrics: nếu được truyền vào, gọi record_transmitted sau air-time
+                 (dùng cho flooding — Gradient/ADUP tự gọi ở routing layer).
+        """
 
         # 1. Random TX jitter (collision avoidance)
         jitter = random.uniform(
@@ -179,6 +183,10 @@ class SensorNode:
         sender.packets_sent += 1
         sender.bytes_transmitted += packet.size_bytes
         packet.tx_timestamps.append(self.env.now)
+
+        # Đếm TX attempt tại đây — sau khi chiếm kênh thực sự
+        if metrics is not None:
+            metrics.record_transmitted(is_hello=False)
 
         # 4. Rician LUT channel decision — đếm concurrent TX trong vùng lân cận
         dist = sender.distance_to(self)

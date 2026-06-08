@@ -83,10 +83,12 @@ class FloodingNode:
         for nb in self.node.neighbors:
             if not nb.is_alive():
                 continue
-            routing.metrics.record_transmitted(is_hello=False)
-            # clone() copy path và tx_timestamps thành list độc lập,
-            # tránh shared state khi nhiều coroutine chạy song song
-            self.env.process(nb._deliver(self.node, pkt.clone(), routing.channel))
+            # record_transmitted được gọi bên trong _deliver sau khi air-time
+            # hoàn tất — nhất quán với cách Gradient/ADUP đếm NTL
+            self.env.process(
+                nb._deliver(self.node, pkt.clone(), routing.channel,
+                            metrics=routing.metrics)
+            )
 
     # -----------------------------------------------------------------------
     # Uplink generator
@@ -155,18 +157,16 @@ class FloodingNode:
                 return
             self._remember_dl(pkt.id)
 
-            # Every non-sink node is a "destination" for broadcast downlink
             pkt.on_forward(self.node.id)
+
+            # Ghi delivery trước, rồi mới quyết định có relay tiếp không
             self.routing.metrics.record_bc_delivered(
                 pkt.id, self.node.id, self.env.now
             )
 
-            # Keep rebroadcasting so further nodes can also receive
+            # Chỉ relay nếu TTL còn — node rìa mạng nhận được nhưng không relay
             if not pkt.is_ttl_expired():
                 self._broadcast(pkt)
-            else:
-                pkt.mark_dropped(DropReason.TTL_EXPIRED)
-                self.routing.metrics.record_drop("ttl_expired")
             return
 
         # --- UPLINK: sensor → sink ---
