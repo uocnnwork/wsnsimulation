@@ -111,6 +111,24 @@ class DataPacket(Packet):
         self.last_hop   = forwarder_id
         self.path.append(forwarder_id)
 
+    def clone(self) -> "DataPacket":
+        """Bản sao độc lập cho flooding — nhanh hơn deepcopy."""
+        obj = object.__new__(DataPacket)
+        obj.id            = self.id
+        obj.source_id     = self.source_id
+        obj.dest_id       = self.dest_id
+        obj.size_bytes    = self.size_bytes
+        obj.ptype         = self.ptype
+        obj.creation_time = self.creation_time
+        obj.hop_count     = self.hop_count
+        obj.last_hop      = self.last_hop
+        obj.drop_reason   = self.drop_reason
+        obj.tx_timestamps = list(self.tx_timestamps)
+        obj.ttl           = self.ttl
+        obj.payload       = self.payload
+        obj.path          = list(self.path)
+        return obj
+
     def is_ttl_expired(self) -> bool:
         return self.ttl <= 0
 

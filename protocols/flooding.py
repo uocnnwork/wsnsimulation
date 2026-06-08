@@ -84,7 +84,9 @@ class FloodingNode:
             if not nb.is_alive():
                 continue
             routing.metrics.record_transmitted(is_hello=False)
-            self.env.process(nb._deliver(self.node, pkt, routing.channel))
+            # clone() copy path và tx_timestamps thành list độc lập,
+            # tránh shared state khi nhiều coroutine chạy song song
+            self.env.process(nb._deliver(self.node, pkt.clone(), routing.channel))
 
     # -----------------------------------------------------------------------
     # Uplink generator
@@ -143,6 +145,10 @@ class FloodingNode:
     # -----------------------------------------------------------------------
 
     def on_receive(self, pkt: DataPacket) -> None:
+        # Chặn: không xử lý gói tin do chính node này sinh ra (loop-back)
+        if pkt.source_id == self.node.id:
+            return
+
         # --- DOWNLINK: packet originated from sink ---
         if pkt.source_id == self.routing.network.sink.id and not self.node.is_sink:
             if self._is_dl_dup(pkt.id):
@@ -151,8 +157,8 @@ class FloodingNode:
 
             # Every non-sink node is a "destination" for broadcast downlink
             pkt.on_forward(self.node.id)
-            self.routing.metrics.record_delivered(
-                pkt.id, self.env.now, hop_count=pkt.hop_count
+            self.routing.metrics.record_bc_delivered(
+                pkt.id, self.node.id, self.env.now
             )
 
             # Keep rebroadcasting so further nodes can also receive
@@ -213,21 +219,8 @@ class FloodingRouting:
             node._on_receive = self._on_receive
 
     def run_setup_phase(self) -> None:
-        from collections import deque
-        sink = self.network.sink
-        sink.gradient_level = 0.0
-        visited: set[int] = {sink.id}
-        q = deque([sink])
-        while q:
-            cur = q.popleft()
-            for nb in cur.neighbors:
-                if nb.id not in visited:
-                    nb.gradient_level = float(cur.gradient_level + 1)
-                    visited.add(nb.id)
-                    q.append(nb)
-        for node in self.network.nodes:
-            if node.id not in visited:
-                node.gradient_level = float("inf")
+        # Flooding thuần túy — không cần khởi tạo topology hay gradient.
+        pass
 
     def start_forwarding(self) -> None:
         for node in self.network.nodes:

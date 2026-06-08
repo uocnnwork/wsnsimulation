@@ -180,9 +180,17 @@ class SensorNode:
         sender.bytes_transmitted += packet.size_bytes
         packet.tx_timestamps.append(self.env.now)
 
-        # 4. Rician LUT channel decision
+        # 4. Rician LUT channel decision — đếm concurrent TX trong vùng lân cận
         dist = sender.distance_to(self)
-        success = channel.transmit(dist)
+        # Đếm số neighbor của receiver đang transmit đồng thời
+        # (trong window CCA_MIN_SPACING_MS) — đây là số interferer thực tế
+        now = self.env.now
+        cca_window = self.settings.CCA_MIN_SPACING_MS / 1000.0
+        concurrent = sum(
+            1 for nb in self.neighbors
+            if nb.id != sender.id and (now - nb.last_tx_time) < cca_window
+        ) + 1  # +1 cho sender hiện tại
+        success = channel.transmit(dist, concurrent_tx=concurrent)
         if not success:
             self.packets_dropped_rssi += 1
             if isinstance(packet, (DataPacket, BeaconPacket)):

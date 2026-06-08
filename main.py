@@ -151,7 +151,19 @@ def _print_summary_labeled(cfg, network, metrics: MetricsCollector,
     n_created   = len(raw["created"])
     n_delivered = len(raw["delivered"])
     n_dropped   = metrics.get_total_drops()
-    total_e     = sum(n.energy_consumed for n in network.nodes)
+    n_non_sink  = sum(1 for n in network.nodes if not n.is_sink)
+
+    is_flooding_downlink = "flooding" in label.lower() and "[downlink]" in label.lower()
+
+    if is_flooding_downlink:
+        pdr      = metrics.get_pdr_broadcast(n_non_sink)
+        bc_count = raw["bc_deliveries_count"]
+        pdr_str  = (f"  PDR (broadcast)   : {pdr:.2f} %"
+                    f"  ({bc_count} node-deliveries / "
+                    f"{n_created} pkts × {n_non_sink} nodes)")
+    else:
+        pdr     = metrics.get_pdr()
+        pdr_str = f"  PDR               : {pdr:.2f} %"
 
     sep  = "=" * 60
     dash = "-" * 60
@@ -163,7 +175,7 @@ def _print_summary_labeled(cfg, network, metrics: MetricsCollector,
     print(f"  Packets delivered : {n_delivered}")
     print(f"  Packets dropped   : {n_dropped}")
     print(dash)
-    print(f"  PDR               : {metrics.get_pdr():.2f} %")
+    print(pdr_str)
     print(f"  NTL (total TX)    : {metrics.get_ntl():,}")
     print(sep)
 
@@ -391,7 +403,10 @@ def compare_algorithms(cfg=settings) -> None:
 
             env     = simpy.Environment()
             network = Network(env, cfg)
-            channel = RicianChannelModel(cfg.LUT_PATH)
+            channel = RicianChannelModel(
+                cfg.LUT_PATH,
+                collision_penalty=getattr(cfg, "COLLISION_PENALTY_PER_TX", 0.85),
+            )
             metrics = MetricsCollector()
             routing = ProtocolClass(network, channel, metrics, cfg)
 
@@ -416,10 +431,15 @@ def compare_algorithms(cfg=settings) -> None:
             _print_summary_labeled(cfg, network, metrics,
                                    f"{label} [{direction}]")
 
+            is_flooding_dl = (label == "Flooding" and direction == "downlink")
+            n_non_sink     = sum(1 for n in network.nodes if not n.is_sink)
+            pdr_val = (metrics.get_pdr_broadcast(n_non_sink)
+                       if is_flooding_dl else metrics.get_pdr())
+
             if label not in results:
                 results[label] = {}
             results[label][direction] = {
-                "pdr":       metrics.get_pdr(),
+                "pdr":       pdr_val,
                 "ntl":       metrics.get_ntl(),
                 "avg_rtt":   metrics.get_avg_rtt(),
                 "avg_hops":  metrics.get_avg_hop_count(),

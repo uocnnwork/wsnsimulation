@@ -13,6 +13,10 @@ class MetricsCollector:
         self._delivered:  dict[int, float] = {}  # pkt_id → delivery_time
         self._hop_counts: dict[int, int]   = {}  # pkt_id → hop_count on delivery
 
+        # Downlink broadcast tracking (flooding-specific, không ảnh hưởng PDR chính)
+        # (pkt_id, node_id) → delivery_time — đếm số node duy nhất nhận được mỗi gói
+        self._bc_deliveries: dict[tuple, float] = {}
+
         # Transmission counter (all attempts: HELLO + DATA, success + fail)
         self._total_transmissions: int = 0
 
@@ -50,6 +54,14 @@ class MetricsCollector:
         self._delivered[packet_id] = delivery_time
         self._hop_counts[packet_id] = hop_count
 
+    def record_bc_delivered(self, packet_id: int, node_id: int,
+                             delivery_time: float) -> None:
+        """Broadcast downlink delivery — mỗi (pkt_id, node_id) chỉ tính 1 lần.
+        Dùng riêng cho flooding downlink, không ảnh hưởng get_pdr()."""
+        key = (packet_id, node_id)
+        if key not in self._bc_deliveries:
+            self._bc_deliveries[key] = delivery_time
+
     def record_drop(self, reason: str) -> None:
         key = reason if reason in self._drops else "other"
         self._drops[key] += 1
@@ -66,6 +78,17 @@ class MetricsCollector:
         if not self._created:
             return 0.0
         return len(self._delivered) / len(self._created) * 100.0
+
+    def get_pdr_broadcast(self, num_non_sink_nodes: int) -> float:
+        """PDR cho broadcast downlink: unique (pkt_id, node_id) nhận được
+        chia cho (số gói tạo ra × số non-sink node).
+        Chỉ có ý nghĩa khi dùng với flooding downlink."""
+        unique_pkts = len({pkt_id for pkt_id, _ in self._bc_deliveries})
+        n_created   = len(self._created)
+        total_expected = n_created * num_non_sink_nodes
+        if total_expected == 0:
+            return 0.0
+        return len(self._bc_deliveries) / total_expected * 100.0
 
     def get_ntl(self) -> int:
         """Total transmission attempts (HELLO + DATA)."""
@@ -122,6 +145,7 @@ class MetricsCollector:
             "created":              dict(self._created),
             "delivered":            dict(self._delivered),
             "hop_counts":           dict(self._hop_counts),
+            "bc_deliveries_count":  len(self._bc_deliveries),
             "total_transmissions":  self._total_transmissions,
             "hello_transmissions":  self._hello_transmissions,
             "drops":                dict(self._drops),

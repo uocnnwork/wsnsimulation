@@ -96,6 +96,14 @@ ADUP_HYSTERESIS_DB:           float = 5.0    # Hysteresis added to Old RSSI
 # ---------------------------------------------------------------------------
 FLOODING_TTL: int      = 12   # max hops for pure flooding (caps coroutine count)
 N_FLOOD_WORKERS: int   = 8    # parallel TX workers per node
+
+# ---------------------------------------------------------------------------
+# Channel collision model
+# ---------------------------------------------------------------------------
+# Mỗi concurrent transmitter trong CCA window làm giảm success_prob theo hệ số này.
+# 0.85 cho kết quả gần với thực nghiệm BLE Mesh flooding (~70-85% PDR).
+# Tăng lên 1.0 để tắt collision penalty (lý tưởng hoá).
+COLLISION_PENALTY_PER_TX: float = 0.85
 RANDOM_SEED: int = 42   # set to None to disable fixed seed: Default = 42
 
 # ---------------------------------------------------------------------------
