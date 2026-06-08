@@ -13,7 +13,7 @@ TOPOLOGY:      str   = "Random"   # "Random" | "Grid" | "Star" | "Tree"
 # ---------------------------------------------------------------------------
 # Simulation time
 # ---------------------------------------------------------------------------
-SIM_DURATION:    float = 60.0   # seconds of simulated time
+SIM_DURATION:    float = 300.0   # seconds of simulated time
 DATA_INTERVAL:   float = 1.0    # seconds between DATA generations per node
 DATA_RATE:       int   = 1      # packets per interval per node
 NUM_TIME_STEPS:  int   = 100    # kept for backwards compat (unused in SimPy mode)
