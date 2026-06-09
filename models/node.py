@@ -181,7 +181,6 @@ class SensorNode:
         sender.last_tx_time = self.env.now
         sender.consume_energy(self.settings.ENERGY_PER_TX)
         sender.packets_sent += 1
-        sender.bytes_transmitted += packet.size_bytes
         packet.tx_timestamps.append(self.env.now)
 
         # Đếm TX attempt tại đây — sau khi chiếm kênh thực sự
@@ -190,8 +189,6 @@ class SensorNode:
 
         # 4. Rician LUT channel decision — đếm concurrent TX trong vùng lân cận
         dist = sender.distance_to(self)
-        # Đếm số neighbor của receiver đang transmit đồng thời
-        # (trong window CCA_MIN_SPACING_MS) — đây là số interferer thực tế
         now = self.env.now
         cca_window = self.settings.CCA_MIN_SPACING_MS / 1000.0
         concurrent = sum(
@@ -204,6 +201,9 @@ class SensorNode:
             if isinstance(packet, (DataPacket, BeaconPacket)):
                 packet.mark_dropped(DropReason.RSSI_TOO_LOW)
             return
+
+        # bytes_transmitted chỉ tăng khi channel thành công (không đếm drop)
+        sender.bytes_transmitted += packet.size_bytes
 
         # 5. RX buffer check (beacons are small — always fits, skip check)
         if isinstance(packet, DataPacket):
@@ -244,7 +244,6 @@ class SensorNode:
             self.packets_received += 1
             if self._on_receive:
                 self._on_receive(self, pkt)
-
     # Protocol callback — set by routing layer after construction
     _on_receive = None   # type: ignore[assignment]
 

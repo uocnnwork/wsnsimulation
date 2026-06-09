@@ -171,18 +171,22 @@ class GradientRouting:
             self._maybe_send_heartbeat(node)
 
     def _sink_downlink_process(self, sink: SensorNode):
-        """Sink sends Backprop Data packets once backprop routes are learned (§4.1, §4.3.2)."""
+        """Sink sends Backprop Data packets once backprop routes are learned (§4.1, §4.3.2).
+        Round-robin: 1 gói/interval để công bằng với ADUP."""
         cfg = self.settings
-        # Allow beacons + heartbeats to populate backprop table
         convergence_wait = cfg.START_DELAY_MAX_S + cfg.BEACON_PERIOD_S * 2
         yield self.env.timeout(convergence_wait)
 
+        dest_nodes = [n for n in self.network.nodes if not n.is_sink]
+        idx = 0
+
         while sink.is_alive():
             yield self.env.timeout(cfg.DATA_INTERVAL)
-            for node in self.network.nodes:
-                if node.is_sink or not node.is_alive():
+            for _ in range(len(dest_nodes)):
+                node = dest_nodes[idx % len(dest_nodes)]
+                idx += 1
+                if not node.is_alive():
                     continue
-                # Only send if backprop route exists for this destination
                 has_route = any(
                     node.id in bset or node.id == nb_id
                     for nb_id, (_, _, _, bset) in self._ftable[sink.id].items()
@@ -197,6 +201,7 @@ class GradientRouting:
                 )
                 self.metrics.record_created(pkt.id, self.env.now)
                 self.env.process(self._forward_downlink(pkt, sink))
+                break  # 1 gói mỗi interval
 
     # =========================================================================
     # Forwarding table management

@@ -62,7 +62,8 @@ class FloodingNode:
         self._uplink_dup[key] = self.env.now
 
     def _is_dl_dup(self, pkt_id: int) -> bool:
-        key = (0, pkt_id)
+        sink_id = self.routing.network.sink.id
+        key = (sink_id, pkt_id)
         if key not in self._downlink_dup:
             return False
         if self.env.now - self._downlink_dup[key] > self._dup_timeout:
@@ -71,10 +72,13 @@ class FloodingNode:
         return True
 
     def _remember_dl(self, pkt_id: int) -> None:
-        key = (0, pkt_id)
+        sink_id = self.routing.network.sink.id
+        key = (sink_id, pkt_id)
         if len(self._downlink_dup) >= self._dup_cache_size:
             del self._downlink_dup[next(iter(self._downlink_dup))]
-        self._downlink_dup[key] = self.env.now    # -----------------------------------------------------------------------
+        self._downlink_dup[key] = self.env.now
+
+    # -----------------------------------------------------------------------
     # Broadcast
     # -----------------------------------------------------------------------
 

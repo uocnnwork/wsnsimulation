@@ -75,6 +75,26 @@ class ADUPDownlinkPacket(DataPacket):
         self.route:        List[int] = route   # ordered list of node IDs to traverse
         self.route_offset: int       = 0       # points to current entry in route
 
+    def clone(self) -> "ADUPDownlinkPacket":
+        """Override clone() để copy thêm route và route_offset."""
+        obj = object.__new__(ADUPDownlinkPacket)
+        obj.id            = self.id
+        obj.source_id     = self.source_id
+        obj.dest_id       = self.dest_id
+        obj.size_bytes    = self.size_bytes
+        obj.ptype         = self.ptype
+        obj.creation_time = self.creation_time
+        obj.hop_count     = self.hop_count
+        obj.last_hop      = self.last_hop
+        obj.drop_reason   = self.drop_reason
+        obj.tx_timestamps = list(self.tx_timestamps)
+        obj.ttl           = self.ttl
+        obj.payload       = self.payload
+        obj.path          = list(self.path)
+        obj.route         = list(self.route)
+        obj.route_offset  = self.route_offset
+        return obj
+
 
 # ---------------------------------------------------------------------------
 # ADUP Rank constants  (§3.1.3)
@@ -200,20 +220,23 @@ class ADUPRouting:
 
     def start_downlink_forwarding(self) -> None:
         """Downlink mode: control messages build parent sets + next-hop table,
-        then sink sends downlink packets.
-
-        Nodes cần gửi uplink data để sink build next-hop table (§3.2).
-        Dùng _uplink_data_process (DATA_INTERVAL=1s) thay vì heartbeat (5s)
-        để table được populate nhanh hơn.
-        """
+        then sink sends downlink packets."""
         for node in self.network.nodes:
             if node.is_alive():
-                self.env.process(self._ctrl_process(node))
-                if not node.is_sink:
-                    self.env.process(self._uplink_data_process(node))
+                st = self._state[node.id]
+                # Thêm start delay để tránh burst collision lúc t=0
+                self.env.process(self._delayed_ctrl_and_uplink(node, st.start_delay))
         sink = self.network.sink
         if sink.is_alive():
             self.env.process(self._sink_downlink_process(sink))
+
+    def _delayed_ctrl_and_uplink(self, node: SensorNode, delay: float):
+        """Wrap ctrl + uplink với start delay để tránh burst.
+        Uplink trong downlink mode không count vào PDR metrics."""
+        yield self.env.timeout(delay)
+        self.env.process(self._ctrl_process(node))
+        if not node.is_sink:
+            self.env.process(self._uplink_data_process(node, count_as_created=False))
 
     def _heartbeat_for_table_process(self, node: SensorNode):
         """Send periodic uplink packets so sink can build next-hop table."""
@@ -250,18 +273,22 @@ class ADUPRouting:
             self._purge_parent_set(node)
             self._send_ctrl(node)
 
-    def _uplink_data_process(self, node: SensorNode):
-        """Generate uplink DATA packets once rank is valid (§3.2)."""
+    def _uplink_data_process(self, node: SensorNode,
+                             count_as_created: bool = True):
+        """Generate uplink DATA packets once rank is valid (§3.2).
+
+        count_as_created=False khi chạy trong downlink mode để không
+        làm nhiễu mẫu số PDR của downlink.
+        """
         cfg = self.settings
         st  = self._state[node.id]
-        # Wait until rank is valid (has at least one parent)
         while st.rank >= 255 or not st.parent_set:
             yield self.env.timeout(BASE_INTERVAL_S)
 
         while node.is_alive():
             yield self.env.timeout(cfg.DATA_INTERVAL)
             for _ in range(cfg.DATA_RATE):
-                self._generate_uplink(node)
+                self._generate_uplink(node, count_as_created=count_as_created)
 
     def _sink_downlink_process(self, sink: SensorNode):
         """Sink gửi downlink packet đến từng node theo round-robin (§3.3).
@@ -418,7 +445,8 @@ class ADUPRouting:
         )
         return self.network.get_node_by_id(best_id)
 
-    def _generate_uplink(self, node: SensorNode) -> None:
+    def _generate_uplink(self, node: SensorNode,
+                         count_as_created: bool = True) -> None:
         best = self._get_best_parent(node)
         if best is None:
             return
@@ -429,14 +457,16 @@ class ADUPRouting:
             creation_time=self.env.now,
             next_hop_id=best.id,
         )
-        self.metrics.record_created(pkt.id, self.env.now)
-        self.env.process(self._forward_uplink(pkt, node))
+        if count_as_created:
+            self.metrics.record_created(pkt.id, self.env.now)
+        self.env.process(self._forward_uplink(pkt, node, count_metrics=count_as_created))
 
-    def _forward_uplink(self, packet: ADUPUplinkPacket, src: SensorNode):
+    def _forward_uplink(self, packet: ADUPUplinkPacket, src: SensorNode,
+                        count_metrics: bool = True):
         """Hop-by-hop uplink forwarding.
 
-        next_hop_id trong packet chỉ được set 1 lần tại source (§3.2):
-        sink dùng giá trị này để biết hop đầu tiên từ source → không overwrite.
+        count_metrics=False khi packet chỉ dùng để build next-hop table
+        (downlink mode) — không tính vào PDR numerator/denominator.
         """
         node = src
         cfg  = self.settings
@@ -444,16 +474,12 @@ class ADUPRouting:
         while True:
             best = self._get_best_parent(node)
             if best is None:
-                packet.mark_dropped(DropReason.NO_NEXT_HOP)
-                self.metrics.record_drop("no_next_hop")
-                node.packets_dropped_no_route += 1
-                packet.drop()
+                if count_metrics:
+                    packet.mark_dropped(DropReason.NO_NEXT_HOP)
+                    self.metrics.record_drop("no_next_hop")
+                    node.packets_dropped_no_route += 1
+                    packet.drop()
                 return
-
-            # Chỉ set next_hop_id tại source — các hop trung gian KHÔNG overwrite.
-            # Sink cần biết: "source_id đã gửi đến node nào trước tiên?"
-            # Đó chính là best parent của SOURCE tại thời điểm tạo packet.
-            # (đã được set trong _generate_uplink, giữ nguyên suốt hành trình)
 
             delivered = False
             timeout_s = cfg.SAR_RETRY_TIMEOUT_MS / 1000.0
@@ -462,7 +488,8 @@ class ADUPRouting:
                 if attempt > 0:
                     yield self.env.timeout(timeout_s * (cfg.SAR_RETRY_BACKOFF ** attempt))
                 yield node.transmit_to(best, packet, self.channel)
-                self.metrics.record_transmitted(is_hello=False)
+                if count_metrics:
+                    self.metrics.record_transmitted(is_hello=False)
                 if packet.drop_reason is None:
                     delivered = True
                     break
@@ -472,26 +499,29 @@ class ADUPRouting:
                     packet.drop_reason = None
 
             if not delivered:
-                if packet.drop_reason is None:
-                    packet.mark_dropped(DropReason.MAX_RETRIES)
-                self.metrics.record_drop(
-                    packet.drop_reason.value if packet.drop_reason else "other"
-                )
-                node.packets_dropped_retries += 1
-                packet.drop()
+                if count_metrics:
+                    if packet.drop_reason is None:
+                        packet.mark_dropped(DropReason.MAX_RETRIES)
+                    self.metrics.record_drop(
+                        packet.drop_reason.value if packet.drop_reason else "other"
+                    )
+                    node.packets_dropped_retries += 1
+                    packet.drop()
                 return
 
             packet.on_forward(node.id)
             if packet.is_ttl_expired():
-                packet.mark_dropped(DropReason.TTL_EXPIRED)
-                self.metrics.record_drop("ttl_expired")
-                packet.drop()
+                if count_metrics:
+                    packet.mark_dropped(DropReason.TTL_EXPIRED)
+                    self.metrics.record_drop("ttl_expired")
+                    packet.drop()
                 return
 
             if best.is_sink:
-                self.metrics.record_delivered(
-                    packet.id, self.env.now, hop_count=packet.hop_count
-                )
+                if count_metrics:
+                    self.metrics.record_delivered(
+                        packet.id, self.env.now, hop_count=packet.hop_count
+                    )
                 return
 
             node = best

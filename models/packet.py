@@ -47,6 +47,11 @@ class DropReason(Enum):
 class Packet:
     _id_counter = itertools.count(1)
 
+    @classmethod
+    def reset_id_counter(cls) -> None:
+        """Reset ID counter trước mỗi simulation run để IDs nhất quán."""
+        cls._id_counter = itertools.count(1)
+
     def __init__(
         self,
         source_id:     int,

@@ -15,6 +15,7 @@ import simpy
 import config.settings as settings
 from models.channel import RicianChannelModel
 from models.network import Network
+from models.packet import Packet
 from protocols.gradient import GradientRouting
 from protocols.flooding import FloodingRouting
 from protocols.ADUP import ADUPRouting
