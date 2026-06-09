@@ -200,14 +200,17 @@ class ADUPRouting:
 
     def start_downlink_forwarding(self) -> None:
         """Downlink mode: control messages build parent sets + next-hop table,
-        then sink sends downlink packets."""
-        cfg = self.settings
+        then sink sends downlink packets.
+
+        Nodes cần gửi uplink data để sink build next-hop table (§3.2).
+        Dùng _uplink_data_process (DATA_INTERVAL=1s) thay vì heartbeat (5s)
+        để table được populate nhanh hơn.
+        """
         for node in self.network.nodes:
             if node.is_alive():
                 self.env.process(self._ctrl_process(node))
-                # Non-sink nodes send heartbeat-style uplink to populate next-hop table
                 if not node.is_sink:
-                    self.env.process(self._heartbeat_for_table_process(node))
+                    self.env.process(self._uplink_data_process(node))
         sink = self.network.sink
         if sink.is_alive():
             self.env.process(self._sink_downlink_process(sink))
@@ -261,19 +264,29 @@ class ADUPRouting:
                 self._generate_uplink(node)
 
     def _sink_downlink_process(self, sink: SensorNode):
-        """Sink periodically sends downlink packets to all reachable nodes."""
+        """Sink gửi downlink packet đến từng node theo round-robin (§3.3).
+
+        Gửi 1 gói/interval thay vì N gói đồng thời — tránh nghẽn channel.
+        """
         cfg = self.settings
-        # Allow time for next-hop table to be populated from uplink packets
         convergence = cfg.START_DELAY_MAX_S + BASE_INTERVAL_S * 3
         yield self.env.timeout(convergence)
 
+        # Danh sách dest node, lặp vòng tròn
+        dest_nodes = [n for n in self.network.nodes if not n.is_sink]
+        idx = 0
+
         while sink.is_alive():
             yield self.env.timeout(cfg.DATA_INTERVAL)
-            for dest_node in self.network.nodes:
-                if dest_node.is_sink or not dest_node.is_alive():
+
+            # Tìm node kế tiếp có route
+            for _ in range(len(dest_nodes)):
+                dest_node = dest_nodes[idx % len(dest_nodes)]
+                idx += 1
+                if not dest_node.is_alive():
                     continue
                 if dest_node.id not in self._nexthop_table:
-                    continue   # no route yet
+                    continue
                 route = self._build_downlink_route(dest_node.id)
                 if route is None:
                     continue
@@ -286,6 +299,7 @@ class ADUPRouting:
                 )
                 self.metrics.record_created(pkt.id, self.env.now)
                 self.env.process(self._forward_downlink(pkt, sink))
+                break   # 1 gói mỗi interval
 
     # =========================================================================
     # Parent set management
@@ -419,7 +433,11 @@ class ADUPRouting:
         self.env.process(self._forward_uplink(pkt, node))
 
     def _forward_uplink(self, packet: ADUPUplinkPacket, src: SensorNode):
-        """Hop-by-hop uplink forwarding. Each hop updates next_hop_id."""
+        """Hop-by-hop uplink forwarding.
+
+        next_hop_id trong packet chỉ được set 1 lần tại source (§3.2):
+        sink dùng giá trị này để biết hop đầu tiên từ source → không overwrite.
+        """
         node = src
         cfg  = self.settings
 
@@ -432,8 +450,10 @@ class ADUPRouting:
                 packet.drop()
                 return
 
-            # Update next_hop_id to reflect forwarder's best parent
-            packet.next_hop_id = best.id
+            # Chỉ set next_hop_id tại source — các hop trung gian KHÔNG overwrite.
+            # Sink cần biết: "source_id đã gửi đến node nào trước tiên?"
+            # Đó chính là best parent của SOURCE tại thời điểm tạo packet.
+            # (đã được set trong _generate_uplink, giữ nguyên suốt hành trình)
 
             delivered = False
             timeout_s = cfg.SAR_RETRY_TIMEOUT_MS / 1000.0
@@ -617,12 +637,10 @@ class ADUPRouting:
                 self._recompute_rank(node)
 
         elif isinstance(packet, ADUPUplinkPacket):
-            # Sink learns next-hop: source_id's best parent = next_hop_id
+            # Sink learns next-hop: source_id's best parent = next_hop_id (§3.2)
+            # record_delivered đã được gọi trong _forward_uplink khi best.is_sink
             if node.is_sink:
                 self._nexthop_table[packet.source_id] = packet.next_hop_id
-                self.metrics.record_delivered(
-                    packet.id, self.env.now, hop_count=packet.hop_count
-                )
             # Intermediate nodes: update RSSI from sender
             else:
                 src_id   = packet.source_id

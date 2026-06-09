@@ -217,12 +217,12 @@ def _print_comparison_table(results: dict[str, dict]) -> None:
 def _plot_comparison(results: dict[str, dict],
                      output_path: str = "comparison.png") -> None:
     labels        = list(results.keys())
-    metrics_keys  = ["pdr",     "ntl"]
-    metric_labels = ["PDR (%)", "NTL (TX)"]
+    metrics_keys  = ["pdr",     "ntl",        "ntl_bytes"]
+    metric_labels = ["PDR (%)", "NTL (pkts)", "NTL (bytes)"]
     bar_colors    = ["#2E86AB", "#E63946", "#2CA02C"]
 
     fig, axes = plt.subplots(1, len(metrics_keys),
-                             figsize=(IEEE_DOUBLE * 0.5, 2.8), dpi=300)
+                             figsize=(IEEE_DOUBLE, 2.8), dpi=300)
     fig.suptitle("Algorithm Comparison", fontweight="bold", y=1.02)
 
     for ax, key, mlabel in zip(axes, metrics_keys, metric_labels):
@@ -232,7 +232,12 @@ def _plot_comparison(results: dict[str, dict],
                              for i in range(len(labels))],
                       edgecolor="black", linewidth=0.5, alpha=0.85, width=0.5)
         for bar, v in zip(bars, vals):
-            fmt = f"{v:,.0f}" if key == "ntl" else f"{v:.2f}"
+            if key == "ntl_bytes":
+                fmt = f"{v/1000:.1f}k" if v >= 1000 else str(int(v))
+            elif key == "ntl":
+                fmt = f"{v:,.0f}"
+            else:
+                fmt = f"{v:.2f}"
             ax.text(bar.get_x() + bar.get_width() / 2,
                     bar.get_height() * 1.02 if v > 0 else 0.01,
                     fmt, ha="center", va="bottom", fontsize=6)
@@ -294,23 +299,24 @@ def _print_comparison_table_both(results: dict[str, dict]) -> None:
 def _plot_comparison_both(results: dict[str, dict],
                            output_path: str = "comparison.png") -> None:
     labels        = list(results.keys())
-    metrics_keys  = ["pdr",     "ntl"]
-    metric_labels = ["PDR (%)", "NTL (TX)"]
+    metrics_keys  = ["pdr",     "ntl",       "ntl_bytes"]
+    metric_labels = ["PDR (%)", "NTL (pkts)", "NTL (bytes)"]
     directions    = ["uplink", "downlink"]
-    # Uplink = solid, downlink = lighter/hatched
+
     color_map = {
         "uplink":   ["#2E86AB", "#E63946", "#2CA02C"],
         "downlink": ["#7EC8E3", "#F4A0A8", "#98DF8A"],
     }
     hatch_map = {"uplink": "", "downlink": "//"}
 
-    n_groups  = len(labels)
-    n_dirs    = len(directions)
-    bar_w     = 0.35
-    x         = np.arange(n_groups)
+    n_groups = len(labels)
+    n_dirs   = len(directions)
+    bar_w    = 0.35
+    x        = np.arange(n_groups)
 
+    # 3 subplots hàng ngang + legend row bên dưới
     fig, axes = plt.subplots(1, len(metrics_keys),
-                             figsize=(IEEE_DOUBLE * 0.6, 2.8), dpi=300)
+                             figsize=(IEEE_DOUBLE, 2.8), dpi=300)
     fig.suptitle("Algorithm Comparison — Uplink vs Downlink",
                  fontweight="bold", y=1.02)
 
@@ -321,13 +327,18 @@ def _plot_comparison_both(results: dict[str, dict],
             bars = ax.bar(
                 x + offset, vals,
                 width=bar_w,
-                color=[color_map[direction][i % 2] for i in range(n_groups)],
+                color=[color_map[direction][i % len(color_map[direction])]
+                       for i in range(n_groups)],
                 edgecolor="black", linewidth=0.4,
                 alpha=0.9, hatch=hatch_map[direction],
-                label=direction,
             )
             for bar, v in zip(bars, vals):
-                fmt = f"{v:,.0f}" if key == "ntl" else f"{v:.2f}"
+                if key == "ntl_bytes":
+                    fmt = f"{v/1000:.1f}k" if v >= 1000 else str(int(v))
+                elif key == "ntl":
+                    fmt = f"{v:,.0f}"
+                else:
+                    fmt = f"{v:.2f}"
                 ax.text(bar.get_x() + bar.get_width() / 2,
                         bar.get_height() * 1.02 if v > 0 else 0.01,
                         fmt, ha="center", va="bottom", fontsize=5)
@@ -344,15 +355,23 @@ def _plot_comparison_both(results: dict[str, dict],
             )
         )
 
-    # Single shared legend on last axis
+    # Legend chung đặt bên dưới tất cả subplots, không đè lên đồ thị
     handles = [
-        plt.Rectangle((0, 0), 1, 1, facecolor="#888888",
-                       hatch=hatch_map[d], edgecolor="black", linewidth=0.4,
+        plt.Rectangle((0, 0), 1, 1,
+                       facecolor="#888888",
+                       hatch=hatch_map[d],
+                       edgecolor="black", linewidth=0.4,
                        label=d.capitalize())
         for d in directions
     ]
-    axes[-1].legend(handles=handles, loc="upper right", fontsize=6,
-                    frameon=True, fancybox=False, edgecolor="black")
+    fig.legend(handles=handles,
+               loc="lower center",
+               ncol=len(directions),
+               fontsize=7,
+               frameon=True,
+               fancybox=False,
+               edgecolor="black",
+               bbox_to_anchor=(0.5, -0.08))
 
     fig.tight_layout(pad=0.4)
     fig.savefig(output_path, dpi=300, bbox_inches="tight", facecolor="white")
@@ -435,15 +454,17 @@ def compare_algorithms(cfg=settings) -> None:
             n_non_sink     = sum(1 for n in network.nodes if not n.is_sink)
             pdr_val = (metrics.get_pdr_broadcast(n_non_sink)
                        if is_flooding_dl else metrics.get_pdr())
+            total_bytes = sum(n.bytes_transmitted for n in network.nodes)
 
             if label not in results:
                 results[label] = {}
             results[label][direction] = {
-                "pdr":       pdr_val,
-                "ntl":       metrics.get_ntl(),
-                "avg_rtt":   metrics.get_avg_rtt(),
-                "avg_hops":  metrics.get_avg_hop_count(),
-                "energy_mj": metrics.get_total_energy(),
+                "pdr":        pdr_val,
+                "ntl":        metrics.get_ntl(),
+                "ntl_bytes":  total_bytes,
+                "avg_rtt":    metrics.get_avg_rtt(),
+                "avg_hops":   metrics.get_avg_hop_count(),
+                "energy_mj":  metrics.get_total_energy(),
             }
 
     if sim_mode == "both":
